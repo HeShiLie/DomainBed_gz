@@ -115,6 +115,66 @@ class ResNet(torch.nn.Module):
             if isinstance(m, nn.BatchNorm2d):
                 m.eval()
 
+class ResNet_mu_sigma(torch.nn.Module):
+    """ResNet with the softmax chopped off and the batchnorm frozen
+        and outputting mu and sigma 
+    """
+    def __init__(self, input_shape, hparams):
+        super(ResNet, self).__init__()
+        if hparams['resnet18']:
+            self.network = torchvision.models.resnet18(pretrained=True)
+            self.n_outputs = 512
+            # we will output 2*128 for mu and sigma in 'resnet18'
+            self.n_mu_sigma = 128
+        else:
+            self.network = torchvision.models.resnet50(pretrained=True)
+            self.n_outputs = 2048
+            # we will output 2*512 for mu and sigma in 'resnet50'
+            self.n_mu_sigma = 512
+
+        # self.network = remove_batch_norm_from_resnet(self.network)
+
+        # adapt number of channels
+        nc = input_shape[0]
+        if nc != 3:
+            tmp = self.network.conv1.weight.data.clone()
+
+            self.network.conv1 = nn.Conv2d(
+                nc, 64, kernel_size=(7, 7),
+                stride=(2, 2), padding=(3, 3), bias=False)
+
+            for i in range(nc):
+                self.network.conv1.weight.data[:, i, :, :] = tmp[:, i % 3, :, :]
+
+        # save memory
+        del self.network.fc
+        self.network.fc = Identity()        
+        # to output mu and sigma
+        self.fc_mu_sigma = nn.Linear(self.n_outputs, 2*self.n_outputs)
+
+        self.freeze_bn()
+        self.hparams = hparams
+        self.dropout = nn.Dropout(hparams['resnet_dropout'])
+
+    def forward(self, x):
+        """Encode x into a feature vector of size (mu_1,...mu_n,sigma_1,...,sigma_n)).
+            the drop out should be applied before the fc layer
+        """
+        return self.fc_mu_sigma(self.dropout(self.network(x)))
+
+    def train(self, mode=True):
+        """
+        Override the default train() to freeze the BN parameters
+        """
+        super().train(mode)
+        self.freeze_bn()
+
+    def freeze_bn(self):
+        for m in self.network.modules():
+            if isinstance(m, nn.BatchNorm2d):
+                m.eval()
+
+
 
 class MNIST_CNN(nn.Module):
     """
